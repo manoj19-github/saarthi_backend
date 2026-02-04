@@ -1,0 +1,60 @@
+openapi: 3.0.3
+
+info:
+  title: Generic Service API
+  description: API documentation for Generic Service
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@example.com
+
+servers:
+  - url: http://localhost:8080/api
+    description: Local Environment
+  - url: https://dev.example.com/api
+    description: Development Environment
+  - url: https://api.example.com/api
+    description: Production Environment
+
+tags:
+  - name: Authentication
+    description: Auth related APIs
+  - name: File
+    description: File operations APIs
+
+paths:
+  /health:
+    get:
+      tags:
+        - System
+      summary: Health Check
+      description: Check if service is up
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: UP
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Invalid request
+
+security:
+  - BearerAuth: []

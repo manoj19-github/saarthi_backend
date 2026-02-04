@@ -1,0 +1,57 @@
+from django.db import models
+
+
+class Candidate(models.Model):
+    id = models.AutoField(primary_key=True)
+    candidate_code = models.CharField(null=False, blank=False)
+    candidate_type = models.SmallIntegerField(null=True, blank=True)
+    kaushal_panjee_id = models.CharField(max_length=50, null=True, blank=True)
+    state = models.ForeignKey("common.State", on_delete=models.CASCADE, null=True, blank=True, related_name='candidates_state')
+    district = models.ForeignKey("common.District", on_delete=models.CASCADE, null=True, blank=True, related_name='candidates_district')
+    block = models.ForeignKey("common.Block", on_delete=models.CASCADE, null=True, blank=True)
+    sanction_order = models.CharField(max_length=50, null=True, blank=True)
+    kb_project_id = models.CharField(max_length=50, null=True, blank=True)
+    village_address = models.ForeignKey("common.Village", on_delete=models.CASCADE, null=True, blank=True)
+    mpr_project_id = models.CharField(max_length=50, null=True, blank=True)
+    constituency = models.ForeignKey("common.AssemblyConstituency", on_delete=models.CASCADE, null=True, blank=True)
+    pincode = models.IntegerField(null=True, blank=True)
+    email = models.EmailField(max_length=500, null=True, blank=True)
+    qualification = models.CharField(max_length=50, null=True, blank=True)
+    father_name = models.CharField(max_length=50, null=True, blank=True)
+    batch = models.ForeignKey("common.Batch", on_delete=models.CASCADE, null=True, blank=True)
+    mpr_id = models.CharField(max_length=50, null=True, blank=True)
+    first_name = models.CharField(max_length=50, null=True, blank=True)
+    last_name = models.CharField(max_length=50, null=True, blank=True)
+    gender = models.IntegerField(null=True, blank=True)
+    category = models.IntegerField(null=True, blank=True)
+    pwd = models.IntegerField(null=True, blank=True)
+    minority = models.IntegerField(null=True, blank=True)
+    religion = models.IntegerField(null=True, blank=True)
+    dob = models.DateField(null=True, blank=True)
+    mobile_no = models.CharField(max_length=15, null=True, blank=True)
+    nature_of_training = models.CharField(max_length=50, null=True, blank=True)
+    aadhar = models.CharField(max_length=10, null=True, blank=True)
+    bank_account = models.CharField(max_length=50, null=True, blank=True)
+    house_no = models.CharField(max_length=50, null=True, blank=True)
+    permanent_address = models.CharField(max_length=500, null=True, blank=True)
+    interest_freelancer = models.BooleanField(default=False, null=True, blank=True)
+    employer = models.ForeignKey("common.Employer", on_delete=models.CASCADE, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_on = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_on = models.DateTimeField(auto_now=True, null=True, blank=True)
+    created_by = models.IntegerField(null=True, blank=True)
+    updated_by = models.IntegerField(null=True, blank=True)
+    status = models.SmallIntegerField(null=True, blank=True)
+    is_verified = models.BooleanField(null=True, blank=True, default=False)
+    available_start_time = models.DateTimeField(null=True, blank=True)
+    available_end_time = models.DateTimeField(null=True, blank=True)
+    available_days = models.CharField(max_length=100, null=True, blank=True)
+    remarks = models.CharField(max_length=255,blank=False,null=True)
+    parliamentary_constituency = models.ForeignKey("common.ParliamentaryConstituency", on_delete=models.CASCADE, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'candidates'
+
+    # def __str__(self):
+    #     return str(self.candidate_code)

@@ -1,0 +1,13 @@
+DB_ALIAS_MASTER = "default"
+DB_ALIAS_REPLICA = "replica"
+FIXED_OTP="111111"
+
+#   Time Format
+OPS_STRF_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+DB_STRF_TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
+OS_STRF_TIME = "%d-%m-%Y %I:%M:%S %p"
+USED = "USED"
+EXPIRED = "EXPIRED"
+DEFAULT_TIMEDIFF = 10
+ACTIVE=1
+INACTIVE=0
