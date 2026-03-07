@@ -28,7 +28,7 @@ class FcmToken(models.Model):
     updated_on = models.DateTimeField(blank=False,null=True)
     updated_by = models.BigIntegerField(blank=False,null=True)
     expiry_time = models.DateTimeField(blank=False,null=True)
-    c_m_no = models.CharField(max_length=15,blank=False,null=True)
+    c_m_no = models.CharField(max_length=50,blank=False,null=True)
     allow_flag = models.IntegerField(default=1,blank=False,null=True)
     is_active = models.BooleanField(default=True)
 

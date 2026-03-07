@@ -23,8 +23,7 @@ def citizen_details_query(citizen_id):
         c.created_by,
         c.created_on,
         c.updated_by,
-        c.updated_on,
-        
+        c.updated_on
         from citizen c
         left join domain_lookup dl on dl.domain_code = c.gender::integer and dl.domain_type='gender'
         left join domain_lookup dl2 on dl2.domain_code = c.user_type::integer and dl2.domain_type = 'user_type'

@@ -1,1 +1,69 @@
-venv
+# Python
+
+**pycache**/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables
+
+.env
+.env.*
+
+# Django stuff
+
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Static files (optional if generated)
+
+staticfiles/
+media/
+
+# Migrations (optional - usually commit migrations)
+
+# */migrations/*
+
+# !*/migrations/**init**.py
+
+# IDE / Editor
+
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Coverage / Testing
+
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+
+# Distribution / packaging
+
+build/
+dist/
+*.egg-info/
+
+# Node (if using frontend tools)
+
+node_modules/
+
+# Logs
+
+logs/
+*.log

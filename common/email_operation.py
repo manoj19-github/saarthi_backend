@@ -25,12 +25,21 @@ def send_mail(email_args:object):
         message["To"] = to_email
         message["subject"] = subject
         message.attach(MIMEText(body,"html"))   
-        with smtplib.SMTP(SMTP_SERVER,SMTP_PORT) as server:
-            server.ehlo()
-            server.send_message(message)
+        print(F"Sending Email ....... {to_email}")
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+            server.ehlo()              # 1️⃣ identify client
+            server.starttls()          # 2️⃣ 🔥 REQUIRED for Gmail
+            server.ehlo()              # 3️⃣ re-identify after TLS
+            server.login(SMTP_USER, SMTP_PASSWORD)  # 4️⃣ auth
+            server.send_message(message) 
+            print("Email sent successfully")
+        # with smtplib.SMTP(SMTP_SERVER,SMTP_PORT) as server:
+        #     server.ehlo()
+        #     server.send_message(message)
         logger.info("All Emails sent successfully")
         return True
     except Exception as e:
+        print(f"Email Sending Error :: {e}")
         logger.exception(f"Email Sending Error :: {e}")
         return False
         

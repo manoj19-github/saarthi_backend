@@ -56,3 +56,8 @@ class UserNotFoundException(Exception):
     def __init__(self, message):
         super(UserNotFoundException,self).__init__(message)
         self.message = message
+        
+class InvalidUsernameFormatException(Exception):
+    def __init___(self, message):
+        super(InvalidUsernameFormatException, self).__init__(message)
+        self.message = message

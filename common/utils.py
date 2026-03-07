@@ -1,6 +1,8 @@
 
 import logging
 
+from utils.constants import DOB_REGEX
+
 
 logger = logging.getLogger(__name__)
 def queryFetcherFn(query_fetcher,cursor):
@@ -11,3 +13,5 @@ def queryFetcherFn(query_fetcher,cursor):
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
     else:
         return None
+
+

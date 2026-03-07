@@ -1,7 +1,11 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+import json
+from django.forms import model_to_dict
+from django.utils import timezone
+from rest_framework.decorators import api_view
 from threading import Thread
 import logging,time,secrets
-from django.core.handlers.exception import AlreadySentOtpException, MandatoryInputMissingException, NoOTPExistsException
+
 from django.template.loader import render_to_string
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
@@ -12,240 +16,194 @@ from citizen.models import Citizen, LoginActivity
 from citizen.raw_sql import citizen_details_query
 from common.email_operation import send_mail
 from common.helper import generalUtilities
-from common.models import DomainLookup, SMSTemplate, UserOTP
+from common.models import Block, District, DomainLookup, SMSTemplate, State,UserOtp
 from common.sms_operation import callSMSUrl
 from common.utils import queryFetcherFn
-from constants import ACTIVE, EXPIRED, INACTIVE, OPS_STRF_TIME_FORMAT
+from constants import ACTIVE, DB_STRF_TIME_FORMAT, EXPIRED, INACTIVE, OPS_STRF_TIME_FORMAT
 from errorcodes import SUCCESSCODE, SUCCESSMESSAGE
 from users.models import User
-from utils.common import generate_otp, get_parameter_value_by_key, validate_email, validate_phone
+from utils.common import generate_otp, get_parameter_value_by_key, validate_dob, validate_email, validate_phone
 from utils.decorators import ratelimit_with_ip_whitelist, require_post, validate_form
-from utils.exceptions import InvalidOTPException, OTPExpiredException, UserNotFoundException
-from utils.formValidator import LoginForm, OTPGenerateForm
-
+from utils.exceptions import AlreadySentOtpException, InvalidOTPException, InvalidUsernameFormatException, MandatoryInputMissingException, NoOTPExistsException, OTPExpiredException, UserNotFoundException
+from utils.formValidator import LoginForm, OTPGenerateForm, SignupForm
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+from .swagger_types import citizen_register_error_response,citizen_register_success_response,citizen_register_request_schema, otp_success_response, otp_error_response, otp_request_schema,citizen_login_error_response,citizen_login_success_response,citizen_login_request_schema
 
 logger = logging.getLogger(__name__)
 
+
+
+@swagger_auto_schema(
+    method="post",
+    request_body=otp_request_schema,
+    responses={
+        200: otp_success_response,
+        400: otp_error_response,
+        409: "OTP already sent",
+    },
+    tags=["Citizen Authentication"]
+)
 @csrf_exempt
+@api_view(["POST"])
 @require_post
 @validate_form(OTPGenerateForm)
-@ratelimit_with_ip_whitelist(rate='5/m', method='POST')
+@ratelimit_with_ip_whitelist(rate="5/m", method="POST")
 def citizenOTPGenerate(request):
-    """
-    Generate OTP for citizen
-    """
-    logger.warning("Citizen OTP Generation API initiated")
-    otp_update_data,response,previousEntryFlag,isSent,otpCreatedData = {},{},False,False,{}
+
     payload = request.data
-    logger.info(f"Payload received for OTP generation: {payload}")
-    username = payload.get('username',None)
-    if username in (None,""):
-        raise Exception("Mobile no or Email is required for OTP generation")
-    
-    # Validate mobile no or email
+    username = payload.get("username")
+
+    if not username:
+        raise MandatoryInputMissingException("Mobile or Email is required")
+
     if not validate_email(username) and not validate_phone(username):
-        raise Exception("Invalid mobile no or email")
-    
-    reqParam = ["otp_validity","otp_flag","sms_flag","email_flag"]
-    param_data = get_parameter_value_by_key(param_keys=reqParam)
-    logger.info(f"Parameter data fetched: {param_data}")
-    if param_data not in (None,""):
-        otp_validity = int(param_data.get("otp_validity",5))
-        otp_flag = int(param_data.get("otp_flag",1))
-        sms_flag = int(param_data.get("sms_flag",1))
-        email_flag = int(param_data.get("email_flag",1))
-    if otp_validity in (None,""):
-        raise Exception("OTP validity parameter is missing")
-    
-    #  ============== Wait for Next OTP Generation if previous OTP is still valid ==============
-    wait_time_duratuion = int(otp_validity/2)
-    otp = generate_otp(otp_flag = otp_flag)
-    logger.info(f"Generated OTP: {otp}")
-    currentDateTime = datetime.now(timezone.utc)
-    timeNow = timezone.now()
-    logger.info(f"Current DateTime in UTC Now: {currentDateTime} and TimeNow: {timeNow}")
-    otp_details = list(UserOTP.objects.filter(
-        Q(u_phone = username) | Q(u_email = username)
-    )).exclude(otp__in=["USED","EXPIRED"]).order_by("-otp_id")[:1].values(
-        "otp_id",
-        "otp",
-        "expiry_time",
-        "created_on",
-        "otp_lock_time"
-    )
-    logger.info(f"OTP Details: {otp_details} and length - {len(otp_details)}")
-    
-    if len(otp_details) > 0:
-        logger.warning(f"Previous OTP Entry Found  :: {otp_details[0]} ")
-        previousEntryFlag = True
-        otp_id = otp_details[0]["otp_id"]
-        otp = otp_details[0]["otp"]
-        otp_time = otp_details[0]["created_on"]
-        otp_lock_time = otp_details[0]["otp_lock_time"]
-        expiry_time = otp_details[0]["expiry_time"]
-        formatted_expiry_time = datetime.strftime(expiry_time,f'{OPS_STRF_TIME_FORMAT}')
-        strf_otp_lock_time = datetime.strftime(expiry_time,f'{OPS_STRF_TIME_FORMAT}')
-        validationTime = datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}')
-        logger.warning(f"OTP :: {otp} and OTP TIME :: {otp_time} and OTP LOCK TIME :: {otp_lock_time} and EXPIRY TIME :: {formatted_expiry_time}")
+        raise Exception("Invalid mobile or email")
+
+    params = get_parameter_value_by_key([
+        "otp_validity", "otp_flag", "sms_flag", "email_flag"
+    ])
+
+    otp_validity = int(params.get("otp_validity", 5))
+    sms_flag = int(params.get("sms_flag", 1))
+    email_flag = int(params.get("email_flag", 1))
+    otp_flag = int(params.get("otp_flag", 1))
+
+    now = timezone.now()
+    otp = generate_otp(otp_flag)
+
+    existing = UserOtp.objects.filter(
+        Q(u_phone=username) | Q(u_email=username)
+    ).exclude(otp__in=["USED", "EXPIRED"]).order_by("-otp_id").first()
+    if existing and existing.expiry_time:
+        expiry_time = existing.expiry_time
         
-        # =============== Checking OTP Validation Time ============== 
-        if validationTime > expiry_time:
-            logger.warning("!!!!   OTP Expired !!!!")
-            otp_update_data["otp"] = EXPIRED
-            otp_update_data["updated_on"] = datetime.now(timezone.utc)
-            expiry_time = currentDateTime + timedelta(minutes=int(otp_validity))
-            otp_lock_time = currentDateTime + timedelta(minutes = wait_time_duratuion)
-            
-            otp_create_data={
-                "otp":otp,
-                "created_on":datetime.strftime(currentDateTime,'%Y-%m-%d %H:%M:%S'),
-                "updated_on":datetime.strftime(currentDateTime,'%Y-%m-%d %H:%M:%S'),
-                "expiry_time":datetime.strftime(expiry_time,'%Y-%m-%d %H:%M:%S'),
-                "otp_lock_time":datetime.strftime(otp_lock_time,'%Y-%m-%d %H:%M:%S'),
-                "updated_on":datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'),
-            }
-            if validate_phone(username):
-                otp_create_data["u_phone"] = username
-                otp_create_data["otp_type"] = 1
-            else:
-                otp_create_data["u_email"] = username
-                otp_create_data["otp_type"] = 2
-            logger.info(f"OTP Create Data: {otp_create_data}")
-        else:
-            logger.warning("Previous OTP is still valid")
-            if validationTime < strf_otp_lock_time:
-                is_sent = True
-            else:
-                otp_lock_time = otp_lock_time+timedelta(minutes=int(wait_time_duratuion))
-                otp_update_data["otp_lock_time"] = datetime.strftime(otp_lock_time,'%Y-%m-%d %H:%M:%S')
-                otp_update_data["updated_on"] = datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}')
-    else:
-        logger.warning(" No previous OTP Entry Found")
-        expiry_time = currentDateTime + timedelta(minutes=int(wait_time_duratuion))
-        otp_lock_time = currentDateTime + timedelta(minutes = wait_time_duratuion)
-        otp_create_data={
-            "otp":otp,
-            "created_on":datetime.strftime(currentDateTime,'%Y-%m-%d %H:%M:%S'),
-            "expiry_time":datetime.strftime(expiry_time,'%Y-%m-%d %H:%M:%S'),
-            "otp_lock_time":datetime.strftime(otp_lock_time,'%Y-%m-%d %H:%M:%S'),
-        }
-        if validate_phone(username):
-            otp_create_data["u_phone"] = username
-            otp_create_data["otp_type"] = 1
-        else:
-            otp_create_data["u_email"] = username
-            otp_create_data["otp_type"] = 2
-        logger.info(f"OTP Create Data: {otp_create_data}")
-        
-        #   -------------- Database Operations ---------------
-        with transaction.atomic():
-            logger.warning("Atomic Transaction Started")
-            if previousEntryFlag and len(otp_details) > 0:
-                UserOTP.objects.filter(otp_id=otp_id).update(**otp_update_data)
-                logger.info("Previous OTP Entry Updated")
-            if len(otp_create_data) > 0:
-                UserOTP.objects.create(**otp_create_data)
-                logger.info("New OTP Entry Created")
-            logger.warning("Atomic Transaction Ended")
-        
-        #   -------------- Send OTP to Mobile No. ---------------
-        if is_sent:
-            lock_time_duration = otp_lock_time - timeNow
-            if lock_time_duration.seconds > 60 : 
-                lock_time_duration = str(int(lock_time_duration.seconds/60))
-            else:
-                lock_time_duration = str(lock_time_duration.seconds) + " Seconds"
-            raise AlreadySentOtpException(f"OTP already sent to {username} in {lock_time_duration}")
-        
-        #  ============================================== 
-        #   OTP SMS & Email Sent
-        # =============================================
-        logger.info(f"userNameFormat :: {username}")
-        
-        if validate_phone(username):
-            logger.info(f"SMS Flag  should be 1 to send sms :: sms_flag = {sms_flag}")
-            if sms_flag == 1:
-                logger.info(f"Sending OTP to {username} via SMS")
-                msg_body = SMSTemplate.objects.filter(template_key="OTP_LOGIN",is_active=True).first().message_body.format(otp=str(otp),expiry_time = str(otp_validity)) 
-                temp_id = SMSTemplate.objects.filter(template_key="OTP_LOGIN",is_active=True).first().template_id
-                
-                if msg_body is not None and username not in (None,""):
-                    logger.info(f"Attempting to send OTP to {username} via SMS :: {username}")
-                    Thread(target=callSMSUrl,args=(msg_body,str(username),temp_id,)).start()
-                else:
-                    logger.warning("No message sent this time as message body is empty")
-            else:
-                logger.warning("SMS Flag is 0 so no SMS sent")
-        else:
-            logger.warning("Invalid mobile no or email")
-    
-    #   --------------- Sent OTP to Email ---------------
-    if validate_email(username):
-        logger.info(f"Sending OTP to {username} via Email")
-        if email_flag == 1:
-            logger.info(f"Attempting to send OTP to {username} via Email :: {username}")
-            subject = "OTP for Email verification"
-            context = {
-                "otp":otp,
-                "expiry_time":str(otp_validity)
-            }
-            email_body = render_to_string("email_otp_tem",context)
-            logger.info(f"Email Body :: {email_body}")
-            email_args = {
-                "subject":subject,
-                "body":email_body,
-                "to":str(username),
-            }
-            
-            #  ---------------- Send OTP to Email ---------------
-            Thread(target=send_mail,args=(email_args)).start()
-            logger.info(f"OTP sent to {username} via Email")
-        else:
-            logger.warning("Email Flag is 0 so no Email sent")
-    else:
-        logger.warning("Invalid mobile no or email")
-    response["message"] = "OTP Sent"
-    return JsonResponse(response)
+        if timezone.is_naive(expiry_time):
+            expiry_time = timezone.make_aware(expiry_time)
+        if expiry_time > now:
+            raise AlreadySentOtpException("OTP already sent and still valid")
+    # if existing and existing.expiry_time > now:
+    #     raise AlreadySentOtpException("OTP already sent and still valid")
+
+    expiry_time = now + timedelta(minutes=otp_validity)
+    lock_time = now + timedelta(minutes=otp_validity // 2)
+
+    with transaction.atomic():
+        if existing:
+            existing.otp = EXPIRED
+            existing.updated_on = now
+            existing.save()
+
+        UserOtp.objects.create(
+            otp=otp,
+            u_phone=username if validate_phone(username) else None,
+            u_email=username if validate_email(username) else None,
+            otptype=1 if validate_phone(username) else 2,
+            created_on=now,
+            expiry_time=expiry_time,
+            otp_lock_time=lock_time
+        )
+
+    # SMS
+    if validate_phone(username) and sms_flag == 1:
+        print("SMS Flag is True validate phone passed")
+        template = SMSTemplate.objects.filter(
+            template_key="OTP_LOGIN", is_active=True
+        ).first()
+
+        if template:
+            msg = template.message_body.format(
+                otp=otp, expiry_time=otp_validity
+            )
+            Thread(
+                target=callSMSUrl,
+                args=(msg, username, template.template_id)
+            ).start()
+
+    # EMAIL
+    if validate_email(username) and email_flag == 1:
+        print("email Flag is True validate email passed")
+        body = render_to_string("email_otp_tem.html", {
+            "otp": otp,
+            "expiry_time": otp_validity
+        })
+        Thread(
+            target=send_mail,
+            args=({
+                "subject": "OTP Verification",
+                "body": body,
+                "to": username
+            },)
+        ).start()
+
+    return JsonResponse({"message": "OTP Sent"}, status=200)
+
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Citizen Login using OTP",
+    operation_description="""
+    Login API for Citizen using OTP authentication.
+
+    - Accepts **mobile number or email**
+    - Validates OTP
+    - Returns citizen profile data
+    - Registers FCM token
+    """,
+    request_body=citizen_login_request_schema,
+    responses={
+        200: citizen_login_success_response,
+        400: citizen_login_error_response,
+        401: "Invalid OTP",
+        404: "User not found",
+        410: "OTP expired",
+        500: "Internal Server Error"
+    },
+    tags=["Citizen Authentication"]
+)
 
 @csrf_exempt
+@api_view(["POST"])
 @require_post
 @validate_form(LoginForm)
-
 def citizenLogin(request):
     """
     Login for citizen
     """
     logger.warning("Citizen Login API initiated")
-    otp_update_data,response,dataset,user_id,token,device_type,user_type = {},{},None,None,None,{},None,1
+    print("Citizen Login API initiated")
+    otp_update_data,response,dataset,user_id,token,device_type,user_type = {},{},None,None,None,{},None
     genUtil = generalUtilities(logger)
     payload = request.data
+    print("Payload received for Login : ",payload)
     logger.info(f"Payload received for Login : {payload}")
     username = payload.get('username',None)
     otp = payload.get('otp',None)
     fcm_token = payload.get('fcm_token',None)
+    print("Username : ",username," and OTP : ",otp," and FCM Token : ",fcm_token)
     logger.info(f"Username : {username} and OTP : {otp} and FCM Token : {fcm_token}")
     if username in (None,"") or otp in (None,""):
         raise MandatoryInputMissingException("Username or OTP is missing")
     logger.info("Username Format Checking .....")
-    if not validate_phone(phone =username) or not validate_email(email = username):
+    if not validate_phone(phone =username) and not validate_email(email = username):
         raise Exception("Invalid mobile no or email")
     
     #  Check if an OTP exists for the given email or mobile no
-    otp_exists = list(UserOTP.objects.filter(
-        Q(u_phone = username) | Q(u_email = username)
-    ))
+    otp_exists = UserOtp.objects.filter(Q(u_phone=username) | Q(u_email=username)).order_by('-created_on')
+    
+    print(f"OTP Exists for the given mobile no or email : {len(otp_exists)}")
     logger.info(f"OTP Exists for the given mobile no or email : {otp_exists}")
     if len(otp_exists) <= 0:
         raise NoOTPExistsException("No OTP exists for the given mobile no or email")
     otp_entry = otp_exists[0]
+    print(f"OTP Entry :: {otp_entry}")
     otp_id = otp_entry.otp_id
     saved_otp = otp_entry.otp
     expiry_time = otp_entry.expiry_time
     
     #  Convert date time to string format 
     expiry_time_str = expiry_time.strftime(f'{OPS_STRF_TIME_FORMAT}')
-    validation_time = datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}')
-    otp_update_data["updated_on"] = datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}')  
+    validation_time = timezone.now().strftime(OPS_STRF_TIME_FORMAT)
+    otp_update_data["updated_on"] = timezone.now().strftime(f'{OPS_STRF_TIME_FORMAT}')  
     logger.warning("OTP :: {saved_otp} || EXPIRY TIME :: {expiry_time_str} || VALIDATION TIME :: {validation_time}")
     
     #  ============== Check if OTP is Expired or not ==============
@@ -256,11 +214,16 @@ def citizenLogin(request):
         #   ===============  Update OTP in the Database =============== 
         with transaction.atomic():
             logger.warning("Atomic Transaction Started")
-            UserOTP.objects.filter(otp_id=otp_id).update(**otp_update_data)
+            UserOtp.objects.filter(otp_id=otp_id).update(**otp_update_data)
             logger.warning("Atomic Transaction Ended")
             logger.info("OTP successfully marked as expired")
         raise OTPExpiredException("OTP Expired")
     logger.info(f"OTP check | {otp} fetching user data please wait .......")
+    print("saved_otp",saved_otp," and otp",otp)
+    print("saved_otp",saved_otp)
+    if(saved_otp == "USED"):
+        raise InvalidOTPException("OTP already used")           
+    print("otp",otp)
     if  saved_otp != otp:
         raise InvalidOTPException("Invalid OTP")
     logger.info(f"OTP Matched | {otp} => {saved_otp} | Fetching User Data  please wait ......")
@@ -269,7 +232,7 @@ def citizenLogin(request):
     
     with transaction.atomic():
         logger.warning("Atomic Transaction Started")
-        UserOTP.objects.filter(otp_id=otp_id).update(**otp_update_data)
+        UserOtp.objects.filter(otp_id=otp_id).update(**otp_update_data)
         logger.warning("Atomic Transaction Ended")
         logger.info("OTP successfully marked as USED")
     
@@ -280,9 +243,9 @@ def citizenLogin(request):
         user = user_data_set.get()
         user_id = user.id
         ref_id = user.ref_id
-        c_m_no = user.c_m_no
         user_type = user.user_type
         logger.info(f"User Existence Validation | User Found | {user}")
+        print(f"User Existence Validation | User Found | {user}")
         
         #   ==============  Citizen Data return ================= 
         citizen_data_set = Citizen.objects.filter(id = ref_id,status=ACTIVE)
@@ -298,25 +261,30 @@ def citizenLogin(request):
                 #   Query Execution 
                 dataset = queryFetcherFn(query,cursor)
                 logger.info(f"Citizen Dataset :: {dataset}")
+                print("dataset",dataset)
             
             #   ==============  Token Generation =================
             token_user_type = DomainLookup.objects.filter(domain_type="user_type",domain_value="Citizen").values_list("domain_code",flat=True).first()  or user_type
-            token = genUtil.generate_new_authentication_token(userId=user_id,cMobNo=username,userType=token_user_type)
+            print("token_user_type",token_user_type)
+            print("username",username)
+            token = genUtil.generate_new_authentication_token(user_id=user_id,cMobNo=username,user_type=token_user_type)
+            print("token-------------------------------------------",token)
             logger.info(f"Token Generated :: {token} and Token User Type :: {token_user_type}")
             
-            if token is not (None,""):
-                if LoginActivity.objects.filter(m_no=username,active_status=ACTIVE).exists():
-                    LoginActivity.objects.filter(m_no=username,active_status=ACTIVE).update(active_status=INACTIVE,logout_time=datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'),updated_on=datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'))
-                    logger.info(f"Previous Citizen Login Activity Record Found and Updated")
-                LoginActivity.objects.create(m_no=username,user_type=user_type,login_time=datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'),logout_time=None,active_status=ACTIVE,created_on=datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'))
+            if token  not in (None,""):
+                updated = LoginActivity.objects.filter(m_no=username,active_status=ACTIVE).update(active_status=INACTIVE,logout_time=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),updated_on=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'))
+                print(f"FCM Token ::  276   {fcm_token} , Token user type :: {token_user_type}")
+                LoginActivity.objects.create(m_no=username,user_type=user_type,login_time=timezone.now().strftime(f'{OPS_STRF_TIME_FORMAT}'),logout_time=None,active_status=ACTIVE,created_on=timezone.now().strftime(f'{OPS_STRF_TIME_FORMAT}'))
                 
                 #  ======================  FCM Token Generation   ====================
                 
                 logger.info(f"FCM Token :: {fcm_token} , Token user type :: {token_user_type}")
-                
-                if FcmToken.objects.filter(user_id=user_id,user_type=token_user_type).exxists():
-                    FcmToken.objects.filter(user_id=user_id,user_type=token_user_type).update(token=fcm_token,c_m_no=username,device_type=device_type,updated_by=user_id,updated_on=datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'),is_active=ACTIVE)
+                print(f"FCM Token :: {fcm_token} , Token user type :: {token_user_type}")
+                if FcmToken.objects.filter(user_id=user_id,user_type=token_user_type).exists():
+                    FcmToken.objects.filter(user_id=user_id,user_type=token_user_type).update(token=fcm_token,c_m_no=username,device_type=device_type,updated_by=user_id,updated_on=timezone.now().strftime(f'{OPS_STRF_TIME_FORMAT}'),is_active=ACTIVE)
                     logger.info(f"FCM Token Updated for respective User and User Type : {token_user_type} ")
+                    print(f"FCM Token Updated for respective User and User Type : {token_user_type} ")
+                    # return JsonResponse(response,status=200)
                 else:
                     FcmToken.objects.create(
                         user_id = user_id,
@@ -325,32 +293,233 @@ def citizenLogin(request):
                         device_type=device_type,
                         c_m_no=username,
                         created_by=user_id,
-                        created_on=datetime.now(timezone.utc).strftime(f'{OPS_STRF_TIME_FORMAT}'),
+                        created_on=timezone.now().strftime(f'{OPS_STRF_TIME_FORMAT}'),
                         updated_by=user_id,
                         is_active=ACTIVE
                     )
-                    logger.info(f"FCM Token Created for respective User and User Type : {token_user_type} ")
+                logger.info(f"FCM Token Created for respective User and User Type :  298 ::  {token_user_type} ")
+                print(f"FCM Token Created for respective User and User Type :  298 ::  {token_user_type} ")
                     
-                    request.auth_token = token
-                    response["citizen_data"] = len(dataset) > 0 and dataset[0] or None
-                    response['citizen_data']['user_id'] = user_id
-                    response = response
-                    response['Code'] = SUCCESSCODE
-                    response['Message'] = SUCCESSMESSAGE
+                response["auth_token"] = token
+                response["citizen_data"] = len(dataset) > 0 and dataset[0] or None
+                response['citizen_data']['user_id'] = user_id
+                    # response = response
+                response['Code'] = SUCCESSCODE
+                response['Message'] = SUCCESSMESSAGE
+                print("Response Data :: ",response)
+                logger.info(f"Response Data :: {response}")
+                return JsonResponse(response,status=200)
             else:
                 raise UserNotFoundException("User Not Found")
     
     #  If User not found             #    
     
     else:
-        response={
-            "citizen_data":{
-                "user_id":user_id    
-            },
-        }
-        response = response 
-    response['Code'] = SUCCESSCODE
-    return JsonResponse(response)
+        raise UserNotFoundException("User Not Found")
+
+
+@swagger_auto_schema(
+    method="post",
+    operation_summary="Citizen Registration",
+    operation_description="""
+    API to register or update a Citizen profile.
+
+    **Features**
+    - Registers new Citizen & User
+    - Updates existing Citizen profile
+    - Generates authentication token
+    - Logs login activity
+
+    **Logic**
+    - If `citizen_id` & `user_id` are missing → New Registration
+    - If present → Profile Update
+    """,
+    request_body=citizen_register_request_schema,
+    responses={
+        200: citizen_register_success_response,
+        400: citizen_register_error_response,
+        404: "User not found",
+        409: "Mobile or Email already used",
+        500: "Internal Server Error"
+    },
+    tags=["Citizen Registration"]
+)
+
+@csrf_exempt
+@api_view(["POST"])
+@require_post
+@validate_form(SignupForm)
+def citizenRegister(request):
+    logger.warning("============== Citizen Registration API ==============")
+    message,new_user_id,token,response=None,None,None,{}
+    payload = request.data
+    logger.info(f"Payload received for Register : {payload}")
+    user_id = payload.get('user_id',None)
+    citizen_id=payload.get('citizen_id',None)
+    first_name=payload.get('first_name',None)
+    middle_name=payload.get('middle_name',None)
+    last_name=payload.get('last_name',None)
+    gender=payload.get('gender',None)
+    dob=payload.get('dob',None)
+    mobile_no=payload.get('mobile_no',None)
+    email=payload.get('email',None)
+    state_id = payload.get('state_id',None)
+    district_id = payload.get('district_id',None)
+    block_id = payload.get('block_id',None)
+    pincode = payload.get('pincode',None)
+    genUtil = generalUtilities(logger)
+    
+    if not validate_phone(phone=mobile_no):
+        raise InvalidUsernameFormatException("Invalid mobile no")
+    
+    if email in (None,"") or not validate_email(email=email):
+        raise InvalidUsernameFormatException("Email is missing")
+    if not validate_dob(dob=dob):
+        raise InvalidUsernameFormatException("Invalid Date of Birth")
+    
+    #   State Data 
+    stateDetails = State.objects.filter(id=state_id).first()
+    districtDetails = District.objects.filter(id=district_id).first()
+    blockDetails = None
+    if block_id not in (None,''):
+        blockDetails = Block.objects.filter(id=block_id).first()
+    user_type = DomainLookup.objects.filter(domain_type="user_type",domain_value="Citizen").values_list("domain_code",flat=True).first()
+    
+    with transaction.atomic():
+        if citizen_id in (None,""):
+            if user_id in (None,""):
+                citizen_data_details = {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "gender": gender,
+                    "date_of_birth": dob,
+                    "mobile_number": mobile_no,
+                    "email": email,
+                    "state": stateDetails,
+                    "district": districtDetails,
+                    "block": blockDetails,
+                    "pincode": pincode,
+                    "user_type": user_type,
+                    "created_by": user_id,
+                        "created_on": timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),
+                    "updated_by": None,
+                    "updated_on": timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),
+                }
+                citizen = Citizen.objects.create(**citizen_data_details)
+                citizen_id = citizen.id
+                logger.info(f"Citizen Created with ID : {citizen_id}")
+                
+                
+                #  =================== 
+                #  User Data Validation
+                # ===================== 
+                
+                if User.objects.filter(Q(phone__iexact=mobile_no) | Q(email__iexact=email)).exists():
+                    raise InvalidUsernameFormatException("Mobile no or Email  already used")
+                
+                user_data_details = {
+                    "username":" ".join(filter(None,[first_name,middle_name,last_name])),
+                    "password": None,
+                    "email": email,
+                    "user_type": user_type,
+                    "ref_id": citizen_id,
+                    "phone": mobile_no,
+                    "is_active": ACTIVE,
+                    "created_on": timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),
+                    "updated_on": timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),
+                    "created_by": citizen_id,
+                    "updated_by": None,
+                }
+                user = User.objects.create(**user_data_details)
+                new_user_id = user.id
+                print("new user id ",new_user_id)
+                logger.info(f"User Created with ID : {new_user_id}")
+                with connection.cursor() as cursor:
+                    query = citizen_details_query(citizen_id)
+                    dataset = queryFetcherFn(query,cursor)
+            token_user_type = DomainLookup.objects.filter(domain_type="user_type",domain_value="Citizen").values_list("domain_code",flat=True).first() or user_type
+            token = genUtil.generate_new_authentication_token(user_id=new_user_id,cMobNo=mobile_no,user_type=token_user_type)
+            print("token",token)
+            print("token_user_type",token_user_type)
+            response = {
+                    "registered_data": {
+                        "citizen": dataset,
+                        "user": model_to_dict(user),
+                        
+                    }
+                }
+        
+            if token  not in (None,""):
+                if LoginActivity.objects.filter(m_no=mobile_no,active_status=ACTIVE).exists():
+                    LoginActivity.objects.filter(m_no=mobile_no,active_status=ACTIVE).update(active_status=INACTIVE,logout_time=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),updated_on=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'))
+                LoginActivity.objects.create(m_no=mobile_no,user_type=user_type,login_time=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),logout_time=None,active_status=ACTIVE,created_on=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'))
+                logger.info(f"Previous Citizen Login Activity Record Found and Updated")
+                message = "Citizen Registered Successfully"
+        else:
+            if user_id not in (None,""):
+                Citizen.objects.filter(id=citizen_id).update(first_name=first_name,last_name=last_name,gender=gender,dob=dob,mobile_number=mobile_no,email=email,state=stateDetails,district=districtDetails,block=blockDetails,pincode=pincode,user_type=user_type,updated_by=user_id,updated_on=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'))
+                logger.info(f"Citizen Data Updated")
+                User.objects.filter(id=user_id).update(username=" ".join(filter(None,[first_name,middle_name,last_name])),password=None,email=email,user_type=user_type,ref_id=citizen_id,phone=mobile_no,is_active=ACTIVE,updated_on=timezone.now().strftime(f'{DB_STRF_TIME_FORMAT}'),updated_by=citizen_id)
+                logger.info(f"User Data Updated")
+                message = "Citizen Profile Updated Successfully"
+                
+                response = {
+                    "registered_data": {
+                        "citizen_id": citizen_id,
+                        "user_id": user_id,
+                        
+                    }
+                }
+            else:
+                raise UserNotFoundException("User Not Found")
+        response["auth_token"] = token
+        response["Code"] = SUCCESSCODE
+        response["Message"] = message
+        logger.warning(f"Citizen Registered Successfully")
+        return JsonResponse(response,status=200)
+
+@csrf_exempt
+@api_view(["POST"])
+@require_post
+# @validate_form(SignupForm)
+def citizenServiceRequest(request):
+    logger.warning("============== Citizen Service Request API ==============")
+    message = None
+    payload = request.data
+    logger.info(f"Payload received for Service Request : {payload}")
+    service_request_id = payload.get('service_request_id',None)
+    citizen_id = payload.get('citizen_id',None)
+    candidate_id = payload.get('candidate_id',None)
+    service_id = payload.get('service_id',None)
+    district_id = payload.get('district_id',None)
+    service_status_to = payload.get('service_status_to',None)
+    remakrs = payload.get('remarks',None)
+    preferred_day = payload.get('preferred_day',None)
+    address_id = payload.get('address_id',None)
+    start_time = payload.get('start_time',None)
+    end_time = payload.get('end_time',None)
+    code = payload.get('code',None)
+    question_id = payload.get('question_id',None)
+    
+    # 
+    
+    
+    
+    
+
+
+
+                 
+            
+            
+            
+                
+            
+                        
+                    
+                
+        
+    
                 
                 
                 

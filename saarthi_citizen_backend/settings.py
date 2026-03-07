@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "citizen",
     "health",
     "users",
+    "gigworkers",   # ✅ ADD THIS
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -52,6 +53,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'drf_yasg',
+    "JWTAuth",
 ]
 
 MIDDLEWARE = [
@@ -69,7 +72,7 @@ ROOT_URLCONF = 'saarthi_citizen_backend.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        "DIRS": [BASE_DIR / "templates"],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -189,34 +192,46 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0'
 }
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    
-    'formatters': {
-        'simple': {
-            'format': '%(asctime)s %(levelname)-8s %(message)s',
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "simple": {
+            "format": "%(asctime)s %(levelname)-8s %(name)s %(message)s",
         },
     },
- 'handlers': {
-        'console': {   # ✅ THIS WAS MISSING
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple',
+
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": BASE_DIR / "logs/django.log",
+            "formatter": "simple",
         },
     },
-    "loggers":{
-        "django":{
-            "level":os.getenv("LOG_LEVEL","ERROR"),
-            "handlers":["console"],
-            "propagate":True,
+
+    "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": os.getenv("LOG_LEVEL", "INFO"),
+            "propagate": True,
         },
-        "django.db.backends":{
-            "level":"INFO",
-            "handlers":["console"],
-            "propagate":False,
-        }
-    }
+        "django.db.backends": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
 }
 
 RATE_LIMIT_SKIP_IPS=[]
+SMTP_USER="santramanoj1997@gmail.com"
+SMTP_PASSWORD="itnz kmxy pbph hgqt"
+SMTP_SERVER="smtp.gmail.com"
+SMTP_PORT=587
+FORMAT_ADDER="Saarthi"
 
-# AUTH_USER_MODEL='users.User'
+# AUTH_USER_MODEL='users.User'P

@@ -14,6 +14,7 @@ class Citizen(models.Model):
     mobile_number = models.CharField(max_length=15,blank=False,null=True)
     alter_number = models.CharField(max_length=15,blank=False,null=True)
     email = models.CharField(max_length=100,blank=False,null=True)
+    pincode = models.CharField(max_length=6,blank=False,null=True)
     status = models.SmallIntegerField(default=1,blank=False,null=True)
     state = models.ForeignKey(State, on_delete=models.CASCADE, related_name='citizen_state', blank=True,null=True)
     district = models.ForeignKey(District, on_delete=models.CASCADE, related_name='citizen_distirct', blank=True,null=True)
@@ -22,6 +23,7 @@ class Citizen(models.Model):
     created_on = models.DateTimeField(auto_now_add=True,blank=False,null=True)
     updated_by = models.IntegerField(null=True, blank=True)
     updated_on = models.DateTimeField(auto_now=True,blank=False,null=True)
+    
 
     class Meta:
         managed = True
@@ -55,7 +57,7 @@ class CitizenAddress(models.Model):
 
 class LoginActivity(models.Model):
     id =  models.BigAutoField(primary_key=True)
-    m_no = models.CharField(max_length=15,blank=False,null=True)
+    m_no = models.CharField(max_length=50,blank=False,null=True)
     user_type = models.IntegerField(blank=False,null=True)
     login_time = models.DateTimeField(blank=False,null=True)
     logout_time = models.DateTimeField(blank=False,null=True)

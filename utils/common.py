@@ -6,7 +6,7 @@ from time import time
 
 from common.models import ParameterMaster
 from constants import FIXED_OTP
-from utils.constants import EMAIL_REGEX, PHONE_REGEX
+from utils.constants import DOB_REGEX, EMAIL_REGEX, PHONE_REGEX
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,18 @@ def to_am_pm(time_value):
         return None
     return dt.strftime("%I:%M %p").lstrip("0")
     
-
-
-
+def validate_dob(dob):
+    """Validate An Date Of Birth"""
+    try:
+        dob_flag = False
+        dob_regex = re.compile(DOB_REGEX)
+        if re.fullmatch(dob_regex, str(dob)):
+            logger.info("This is an Perfect Date Of Birth Format")
+            dob_flag = True
+        else:
+            dob_flag = False
+            raise Exception(" No Date of Birth Format Matched With Respective Pattern")
+    except Exception as e:
+        logger.exception(e)
+    finally:
+        return dob_flag
