@@ -1,7 +1,7 @@
 from django import forms
 import re
 from django.utils import timezone
-from datetime import timedelta,datetime
+from datetime import timedelta,datetime,date
 
 
 class loginForm(forms.Form):
@@ -56,15 +56,19 @@ class SignupForm(forms.Form):
 
 
 class CitizenServiceRequestForm(forms.Form):
+
     service_request_id = forms.IntegerField(required=False)
+
     citizen_id = forms.IntegerField(required=True)
     candidate_id = forms.IntegerField(required=True)
+
     service_id = forms.IntegerField(required=True)
-    district_id = forms.IntegerField(required=True)
     service_status_to = forms.IntegerField(required=True)
 
+    district_id = forms.IntegerField(required=True)
+
     remarks = forms.CharField(max_length=500, required=False)
-    preferred_day = forms.DateField(required=False)
+    preferred_day = forms.CharField(required=False)
 
     address_id = forms.IntegerField(required=False)
 
@@ -72,17 +76,27 @@ class CitizenServiceRequestForm(forms.Form):
     end_time = forms.TimeField(required=False)
 
     code = forms.CharField(max_length=50, required=False)
-    question_id = forms.IntegerField(required=False)
 
-    # 🔥 Cross-field validation
+    question_id = forms.JSONField(required=False)
+
+    # Cross field validation
     def clean(self):
         cleaned_data = super().clean()
 
         start_time = cleaned_data.get("start_time")
         end_time = cleaned_data.get("end_time")
 
+        question_id = cleaned_data.get("question_id")
+
+        # Validate time range
         if start_time and end_time:
             if start_time >= end_time:
-                raise forms.ValidationError("Start time must be before end time.")
+                raise forms.ValidationError(
+                    "End time must be greater than start time."
+                )
+
+        # Validate question_id should be list
+        if question_id and not isinstance(question_id, list):
+            raise forms.ValidationError("question_id must be a list.")
 
         return cleaned_data

@@ -5,11 +5,31 @@ import re
 from time import time
 
 from common.models import ParameterMaster
-from constants import FIXED_OTP
+from constants import FIXED_OTP, NAME_REGEX
 from utils.constants import DOB_REGEX, EMAIL_REGEX, PHONE_REGEX
 
 logger = logging.getLogger(__name__)
 
+
+# ============   validate name ============= ==============  
+
+def validate_name(name):
+    """Validate An Name"""
+    try:
+        name_flag = False
+        name_regex = re.compile(NAME_REGEX)
+        if re.fullmatch(name_regex, str(name)):
+            logger.info("This is an Name")
+            name_flag = True
+        else:
+            name_flag = False
+            raise Exception(" No Name Matched With Respective Pattern")
+    except Exception as e:
+        logger.exception(e)
+    finally:
+        return name_flag
+    
+    
 #  ============== Email validation Function     =================== 
 
 def validate_email(email):

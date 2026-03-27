@@ -266,3 +266,29 @@ class DeclineAnswer(models.Model):
     class Meta:
         managed = True    
         db_table = 'decline_answer'
+
+
+class CitizenAddress(models.Model):
+    id = models.AutoField(primary_key=True)
+    address_line_1 = models.CharField(max_length=100,blank=False,null=True)
+    address_line_2 = models.CharField(max_length=100,blank=False,null=True)
+    land_mark = models.CharField(max_length=50,blank=False,null=True)
+    city = models.CharField(max_length=50,blank=False,null=True)
+    district = models.ForeignKey(District, on_delete=models.CASCADE, related_name='citizen_district', blank=True,null=True)
+    state = models.CharField(max_length=50,blank=False,null=True)
+    country = models.CharField(max_length=50,blank=False,null=True)
+    pincode = models.CharField(max_length=50,blank=False,null=True)
+    lattitude = models.CharField(max_length=50,blank=False,null=True)
+    longitude = models.CharField(max_length=50,blank=False,null=True)
+    is_primary = models.BooleanField(default=False)
+    status = models.SmallIntegerField(default=1,blank=False,null=True)
+    created_by = models.IntegerField(null=True, blank=True)
+    created_on = models.DateTimeField(auto_now_add=True,blank=False,null=True)
+    updated_by = models.IntegerField(null=True, blank=True)
+    updated_on = models.DateTimeField(auto_now=True,blank=False,null=True)
+    citizen = models.ForeignKey(Citizen, on_delete=models.CASCADE, related_name='citizen_address_fk_1')
+    class Meta:
+        managed = True
+        db_table = "citizen_address"
+        
+

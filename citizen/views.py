@@ -12,20 +12,22 @@ from django.http import JsonResponse
 from django.db import connection, transaction
 from django.db.models import Q
 from JWTAuth.models import FcmToken
-from citizen.models import Citizen, LoginActivity
+from citizen.models import Citizen, CitizenAddress, DeclineQuestionMaster, LoginActivity, ServiceRequest, ServiceRequestLifecycle
 from citizen.raw_sql import citizen_details_query
 from common.email_operation import send_mail
+from common.firebase import send_fcm_notification_async
 from common.helper import generalUtilities
-from common.models import Block, District, DomainLookup, SMSTemplate, State,UserOtp
+from common.models import Block, District, DomainLookup, FcmNotification, SMSTemplate, Sector, Services, State,UserOtp
 from common.sms_operation import callSMSUrl
 from common.utils import queryFetcherFn
-from constants import ACTIVE, DB_STRF_TIME_FORMAT, EXPIRED, INACTIVE, OPS_STRF_TIME_FORMAT
+from constants import ACTIVE, DB_STRF_TIME_FORMAT, EXPIRED, INACTIVE, OPS_STRF_TIME_FORMAT, STATUS_2, STATUS_2_MESSAGE, STATUS_3, STATUS_3_MESSAGE, STATUS_4, STATUS_4_MESSAGE, STATUS_5, STATUS_5_MESSAGE, STATUS_6, STATUS_6_MESSAGE, STATUS_7, STATUS_7_MESSAGE, STATUS_8, STATUS_9, STATUS_9_MESSAGE, TITLE
 from errorcodes import SUCCESSCODE, SUCCESSMESSAGE
+from gigworkers.models import Candidate
 from users.models import User
-from utils.common import generate_otp, get_parameter_value_by_key, validate_dob, validate_email, validate_phone
+from utils.common import generate_otp, get_parameter_value_by_key, validate_dob, validate_email, validate_name, validate_phone
 from utils.decorators import ratelimit_with_ip_whitelist, require_post, validate_form
 from utils.exceptions import AlreadySentOtpException, InvalidOTPException, InvalidUsernameFormatException, MandatoryInputMissingException, NoOTPExistsException, OTPExpiredException, UserNotFoundException
-from utils.formValidator import LoginForm, OTPGenerateForm, SignupForm
+from utils.formValidator import CitizenServiceRequestForm, LoginForm, OTPGenerateForm, SignupForm
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from .swagger_types import citizen_register_error_response,citizen_register_success_response,citizen_register_request_schema, otp_success_response, otp_error_response, otp_request_schema,citizen_login_error_response,citizen_login_success_response,citizen_login_request_schema
@@ -481,77 +483,561 @@ def citizenRegister(request):
 @csrf_exempt
 @api_view(["POST"])
 @require_post
-# @validate_form(SignupForm)
+@validate_form(CitizenServiceRequestForm)
 def citizenServiceRequest(request):
     logger.warning("============== Citizen Service Request API ==============")
-    message = None
+    message,day_code = None,None
     payload = request.data
-    logger.info(f"Payload received for Service Request : {payload}")
+    logger.info(f"Payload : {payload}")
+    
     service_request_id = payload.get('service_request_id',None)
     citizen_id = payload.get('citizen_id',None)
-    candidate_id = payload.get('candidate_id',None)
-    service_id = payload.get('service_id',None)
-    district_id = payload.get('district_id',None)
-    service_status_to = payload.get('service_status_to',None)
-    remakrs = payload.get('remarks',None)
-    preferred_day = payload.get('preferred_day',None)
-    address_id = payload.get('address_id',None)
-    start_time = payload.get('start_time',None)
-    end_time = payload.get('end_time',None)
-    code = payload.get('code',None)
-    question_id = payload.get('question_id',None)
+    candidate_id = payload.get("candidate_id",None)
+    service_id = payload.get("service_id",None)
+    address_id = payload.get("address_id",None)
+    district_id = payload.get("district_id",None)
+    service_status_to = payload.get("service_status_to",None)
+    remarks = payload.get("remarks",None)
+    preferred_day = payload.get("preferred_day",None)
+    start_time = payload.get("start_time",None)
+    end_time = payload.get("end_time",None)
+    code = payload.get("code",None)
+    question_id = payload.get("question_id",None)
+    logger.info(f"payload >>>> {payload}  citizen id {citizen_id} candidate id {candidate_id} service id {service_id} district id {district_id} service status to {service_status_to} remarks {remarks} preferred day {preferred_day} start time {start_time} end time {end_time} code {code} question id {question_id}")
     
-    # 
+    current_datetime = datetime.now(timezone.utc).strftime(DB_STRF_TIME_FORMAT)
+    citizen_address = CitizenAddress.objects.filter(id=address_id,status=ACTIVE).first()
+    address_name  = " ".join(filter(None,[citizen_address.address_line_1,citizen_address.address_line_2]))
+    ctizenDistrict = District.objects.filter(id=district_id,status=ACTIVE).first()
+    citizen_details = Citizen.objects.filter(id=citizen_id,status=ACTIVE).first()
+    citizen_name = " ".join(filter(None,[citizen_details.first_name,citizen_details.middle_name,citizen_details.last_name]))
+    # citizen_user_type = DomainLookup.objects.filter(domain_type="user_type",domain_value="Citizen").values_list("domain_code",flat=True).first()
+    citizen_user_id = User.objects.filter(id=citizen_id,user_type=citizen_user_type).values_list("id",flat=True).first()
+    citizen_mobile_no = citizen_details.mobile_number
+    service_details = Services.objects.select_related("skill").filter(id = service_id,status=ACTIVE)
+    skill_details = getattr(service_details,"skill",None)
+    skill_id = getattr(service_details,"skill_id",None)
+    sector_details = Sector.objects.filter(id=skill_id,status=ACTIVE).first()
+    candidate_details = Candidate.objects.filter(id=candidate_id,status=ACTIVE).first()
+    candidate_name="Unknown User"
+    if candidate_details is not None:
+        candidate_name = " ".join(filter(None,[candidate_details.first_name,candidate_details.middle_name,candidate_details.last_name]))
+    domain_data = DomainLookup.objects.filter(
+        Q(domain_type="user_type") | 
+        Q(domain_value_in=["Citizen","Gig Worker"]) | Q(domain_type="service_status",domain_code=service_status_to)
+    ).values("domain_code","domain_value","domain_code")
     
+    lookup = {f"{x['domain_code']}": x['domain_value'] for x in domain_data}
     
-    
-    
+    citizen_user_type = lookup.get("user_type_Citizen")
+    candidate_user_type = lookup.get("user_type_Gig Worker")
+    status_name = next(
+        (x['domain_value'] for x in domain_data if x['domain_type'] == "service_status"),
+        None
+    )
+    fcm_data = FcmNotification.objects.filter(
+        status=service_status_to,
+        is_active=ACTIVE
+    ).values("title", "notification").first()
 
+    title = (fcm_data.get("title") if fcm_data else None) or TITLE
+    notification = fcm_data.get("notification") if fcm_data else None
+    candidate_tokens = FcmToken.objects.filter(user_id=candidate_id,is_active=ACTIVE).values_list("token",flat=True)
+    candidate_user_id = User.objects.filter(ref_id=candidate_id,user_type=candidate_user_type).values_list("id",flat=True).first()
+    tokens = FcmToken.objects.filter(Q(user_id = candidate_user_id) | Q(user_id=citizen_user_id),is_active=ACTIVE).values("user_id","token","user_type")
+    tokens = FcmToken.objects.filter(
+    Q(user_id=candidate_user_id, user_type=candidate_user_type) |
+    Q(user_id=citizen_user_id, user_type=citizen_user_type),
+    is_active=True
+    ).values("user_id", "user_type", "token")
 
+    token_map = {(t["user_id"], t["user_type"]): t["token"] for t in tokens}
 
-                 
-            
-            
-            
+    candidate_tokens = token_map.get((candidate_user_id, candidate_user_type))
+    citizen_tokens = token_map.get((citizen_user_id, citizen_user_type))
+    logger.info(f"service request id : {service_request_id}")
+    with transaction.atomic():
+        if service_request_id not in (None,""):
+            current_status = ServiceRequest.objects.filter(id=service_request_id).values_list("status",flat=True).first()
+            #   New Service Accepted  ======>> Status 2 ====>> Gig Worker End
+            if service_status_to ==2 :
+                logger.info(" ===================  NEW SERVICE REQUEST ACCEPTED BY GIG WORKER --- STATUS 2 =============")
+                logger.info(f"Current Status : {current_status}")
+                if current_status == 1 and service_status_to ==2:
+                    code = str(secrets.randbelow(900000)+100000)
+                    logger.info(f"code : {code}")
+                    serviceRequest_details = ServiceRequest.objects.filter(id=service_request_id).first()
+                    if not serviceRequest_details:
+                        raise Exception("Service Request Not Found")
+
+                    for field, value in {
+                        "status": service_status_to,
+                        "booking_code": code,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "assigned_on": current_datetime,
+                        "updated_by": candidate_id,
+                        "updated_on": current_datetime
+                    }.items():
+                        setattr(serviceRequest_details, field, value)
+
+                    serviceRequest_details.save()
+                    
+                    service_request_lifecycle_object={
+                        "service_request": serviceRequest_details,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_2,
+                        "created_by": candidate_id,
+                        "created_on": current_datetime,
+                        "updated_by": None,
+                        "updated_on": None,
+                    }
+                    serviceRequestLifeCycleDetails = ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id=serviceRequestLifeCycleDetails.id
+                    logger.info(f"Service Request Accept status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    logger.info("Service Request Accept status Inserted in Lifecycle Table Successfully")
+
+                    message = "Service Request Accepted By Gig Worker Updated Successfully"
+                    logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}")
+                    notificationPayload = {
+                        "token": citizen_tokens,
+                        "title": "Booking Service Request Status Update",
+                        "body": notification.format(name=candidate_name) or STATUS_2_MESSAGE,
+                        "data": {
+                            "service_request_id": service_request_id,
+                            "status":status_name,
+                            "navigate_to": "citizen_service_listing"
+                        }
+                    }
+                    sent_status = send_fcm_notification_async(notificationPayload)
+                    logger.warning(f"FCM Notification Sent Status :: {sent_status}")
+                else:
+                    raise Exception("Service Request can't Accepted if it's Already Accepted or not pending")
+            #   New Service Rejected  ======>> Status 3 ====>> Gig Worker End
+            elif service_status_to ==3 :
+                logger.info(" ===================  NEW SERVICE REQUEST REJECTED BY GIG WORKER --- STATUS 3 =============")
+                logger.info(f"Current Status : {current_status}")
+                if current_status == 1 and service_status_to ==3:
+                    ServiceRequest.objects.filter(id=service_request_id).update(
+                        service_desc=remarks,
+                        status=service_status_to,
+                        assigned_to=candidate_id,
+                        assigned_by=citizen_id,
+                        assigned_on=current_datetime,
+                        updated_by=candidate_id,
+                        updated_on=current_datetime
+                    )
+                    service_request_details = ServiceRequest.objects.filter(
+                        id=service_request_id
+                    ).get()
+                    service_request_lifecycle_object = {
+                        "service_request": service_request_details,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_3,
+                        "created_by": candidate_id,
+                        "created_on": current_datetime,
+                        "updated_by": None,
+                        "updated_on": None, 
+                    }
+                    serviceRequestLifecycleDetails = ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id=serviceRequestLifecycleDetails.id
+                    logger.info(f"Service Request Reject status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    message="Service Request Rejected By Gig Worker Updated Successfully"
+                    logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}")
+                    sent_status=send_fcm_notification_async(
+                        token=citizen_tokens,
+                        title=title,
+                        body=notification.format(name=candidate_name) or STATUS_3_MESSAGE,
+                        data={
+                            "service_request_id": service_request_id,
+                            "status":status_name,
+                            "navigate_to": "citizen_service_listing"
+                        }
+                    )
+                    logger.warning(f"FCM Notification Sent Status :: {sent_status} push notification dispatched asynchronous for Citizen User  ID :: {citizen_user_id}")
+                else:
+                    raise Exception("Service Request can't Rejected if it's Already Accepted or not pending")
+                logger.info(" ============ >>> Service Request Rejected  by Gig Worker <<< ============")
                 
+            #   New Service Cancelled   ======>> Status 5 ====>> Gig Worker End
+            elif service_status_to ==5 :
+                logger.info(" ================= NEW SERVICE REQUEST CANCELLED BY CITIZEN -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                if current_status == 1 and service_status_to ==5:
+                    ServiceRequest.objects.filter(id=service_request_id).update(
+                        service_desc=remarks,
+                        status=service_status_to,
+                        assigned_to=citizen_id,
+                        assigned_by=citizen_id,
+                        assigned_on=current_datetime,
+                        updated_by=citizen_id,
+                        updated_on=current_datetime
+                    )
+                    serviceRequestDetails = ServiceRequest.objects.filter(id=service_request_id).first()
+                    service_request_lifecycle_object={
+                        "service_request": serviceRequestDetails,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_to": citizen_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_5,
+                        "created_by": citizen_id,
+                        "created_on": current_datetime,
+                        "updated_by": None,
+                        "updated_on": None
+                    }
+                    serviceRequestCycleDetails=ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id=serviceRequestCycleDetails.id
+                    logger.info(f"Service Request Cancelled status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    message="Service Request Cancelled By Citizen Updated Successfully"
+                    logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}")
+                    sent_status=send_fcm_notification_async(
+                        token=citizen_tokens,
+                        title=title,
+                        body=notification.format(name=candidate_name) or STATUS_5_MESSAGE,
+                        data={
+                            "service_request_id": service_request_id,
+                            "status":status_name,
+                            "navigate_to": "citizen_service_listing"
+                        }
+                    )
+                    logger.warning(f"FCM Notification Sent Status :: {sent_status} push notification dispatched asynchronous for Citizen User  ID :: {citizen_user_id}")
+                else:
+                    raise Exception("Service Request can't Cancelled if it's Already Accepted or not pending")
+                logger.info(" ============ >>> Service Request Cancelled  by Citizen <<< ============")
+            #   New Service Not Completed   ======>> Status 4 ====>> Gig Worker End
+            elif service_status_to ==4:
+                logger.info(" ================= NEW SERVICE REQUEST completed by citizen - status 4 -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                if current_status == 7 and service_status_to ==4:
+                    ServiceRequest.objects.filter(id=service_request_id).update(
+                        service_desc=remarks,
+                        status=service_status_to,
+                        assigned_to=candidate_id,
+                        assigned_by=citizen_id,
+                        assigned_on=current_datetime,
+                        updated_by=citizen_id,
+                        updated_on=current_datetime
+                    )
+                    serviceRequestDetails = ServiceRequest.objects.filter(id=service_request_id).first()
+                    service_request_lifecycle_object={
+                        "service_request": serviceRequestDetails,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_4,
+                        "created_by": citizen_id,
+                        "created_on": current_datetime,
+                        "updated_by": None,
+                        "updated_on": None
+                    }
+                    serviceRequestLifeCycleDetails = ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id=serviceRequestLifeCycleDetails.id
+                    logger.info(f"Service Request Completed status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    message="Service Request Completed By Citizen Updated Successfully"
+                    logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}")
+                    sent_status=send_fcm_notification_async(
+                        token=citizen_tokens,
+                        title=title,
+                        body=notification.format(name=candidate_name) or STATUS_4_MESSAGE,
+                        data={
+                            "service_request_id": service_request_id,
+                            "status":status_name,
+                            "navigate_to": "citizen_service_listing"
+                        }
+                    )
+                    logger.warning(f"FCM Notification Sent Status :: {sent_status} push notification dispatched asynchronous for Citizen User  ID :: {citizen_user_id}")
+                else:
+                    raise Exception("Service Request can't Completed if it's Already Accepted or not pending")  
+                logger.info(" ============ >>> Service Request Completed  by Citizen <<< ============")
+                
+            elif service_status_to ==6:
+                logger.info(" ================= NEW SERVICE REQUEST not completed approved by gig worker - status 6 -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                if current_status == 7 and service_status_to ==6:
+                    ServiceRequest.objects.filter(id=service_request_id).update(
+                        service_desc=remarks,
+                        status=service_status_to,
+                        assigned_to=candidate_id,
+                        assigned_by=citizen_id,
+                        assigned_on=current_datetime,
+                        updated_by=citizen_id,
+                        updated_on=current_datetime
+                    )
+                    serviceRequestDetails = ServiceRequest.objects.filter(id=service_request_id).first()
+                    service_request_lifecycle_object={
+                        "service_request": serviceRequestDetails,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_6,
+                        "created_by": citizen_id,
+                        "created_on": current_datetime,
+                        "updated_by": None,
+                        "updated_on": None
+                    }
+                    serviceRequestLifeCycleDetails = ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id=serviceRequestLifeCycleDetails.id
+                    logger.info(f"Service Request Not Completed status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    message="Service Request Not Completed Approved By Citizen Updated Successfully"
+                    logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}")
+                    sent_status=send_fcm_notification_async(
+                        token=citizen_tokens,
+                        title=title,
+                        body=notification.format(name=candidate_name) or STATUS_6_MESSAGE,
+                        data={
+                            "service_request_id": service_request_id,
+                            "status":status_name,
+                            "navigate_to": "citizen_service_listing"
+                        }
+                    )
+                    logger.warning(f"FCM Notification Sent Status :: {sent_status} push notification dispatched asynchronous for Citizen User  ID :: {citizen_user_id}")
+                else:
+                    raise Exception("Service Request can't Not Completed if it's Already Accepted or not pending")  
+                logger.info(" ============ >>> Service Request Not Completed  by Citizen <<< ============") 
             
+            # ! Service Proviced ==== >>> status 7 ====>> Gig Worker End 
+            elif service_status_to ==7:
+                logger.info(" ================= NEW SERVICE REQUEST provided by gig worker - status 7 -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                if current_status == 1 and service_status_to ==7:
+                    
+                    #  Booking Code Confirmation 
+                    if code not in (None,""):
+                        saved_code = ServiceRequest.objects.filter(id=service_request_id).values_list("booking_code",flat=True)
+                        if saved_code != code:
+                            raise Exception("Invalid Booking Code ... please Try Again sometime later !!")
+                        service_request_lifecycle_object={
+                            "service_request": serviceRequestDetails,
+                            "candidate": candidate_details,
+                            "citizen": citizen_details,
+                            "service": service_details,
+                            "lifecycle_status": service_status_to,
+                            "assigned_to": candidate_id,
+                            "assigned_by": citizen_id,
+                            "remarks": STATUS_7,
+                            "created_by": citizen_id,
+                            "created_on": current_datetime,
+                            "updated_by": None,
+                            "updated_on": None
+                        }
+                        serviceRequestLifeCycleDetails= ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                        service_request_lifecycle_object_id = serviceRequestLifeCycleDetails.id
+                        logger.info(f"Service Provided status Inserted in Lifecycle Table For Service Request Id :{service_request_id} and Lifecycle Id :: {service_request_lifecycle_object_id}")
+                        logger.info(f"Service Provided status Inserted in Lifecycle Table Successfully")
+                        message="Service Request Provided By Gig Worker Updated Successfully"
                         
+                        #! Push Notification Return For Status Update 
+                        
+                        logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}, Token User ID :: {citizen_user_id}")
+                        sent_status = send_fcm_notification_async(token=citizen_tokens,
+                                                                  title=title,body=notification.format(name=candidate_name) or STATUS_7_MESSAGE,
+                                                                  data={
+                                                                      "service_request_id": service_request_id,
+                                                                      "status":status_name,
+                                                                      "navigate_to": "citizen_service_listing"
+                                                                    }
+                                                                  )
+                        logger.warning(f"Push Notification Status :: {sent_status} Push Notification Dispatched Asynchronously for Citizen User ID :: {citizen_user_id}")1
+                    else:
+                        raise Exception("Booking Code Not Found, Gig Worker Should Provide Booking Code for Confirmation")
+                else:
+                    raise Exception("Service Provided can't be Updated if it's not not Already Accepted by Gig Worker")
+                logger.info(" ============ >>> Service Provided  by Gig Worker <<< ============")
+                
+            # ! Service Not Provided =======>>>> status 8 ====>> Citizen End 
+            elif service_status_to ==8:
+                logger.info(" ================= Service Not Provided Yet Approved by Citizen - status 8 -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                if current_status == 2 and service_status_to == 8:
+                    ServiceRequest.objects.filter(id=service_request_id).update(
+                        service_desc=remarks,
+                        status=service_status_to,
+                        assigned_to=candidate_id,
+                        assigned_by=citizen_id,
+                        assigned_on=current_datetime,
+                        updated_by=citizen_id,
+                        updated_on=current_datetime
+                    )
+                    serviceRequestDetails = ServiceRequest.objects.filter(
+                        id=service_request_id
+                    ).first()
+                    service_request_lifecycle_object={
+                        "service_request": serviceRequestDetails,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_on": current_datetime,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_8,
+                        "created_by": candidate_id,
+                        "created_on": current_datetime,
+                        "updated_by": None,
+                        "updated_on": None,
+                        "service_desc": remarks
+                    }
+                    serviceRequestLifeCycleDetails = ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id = serviceRequestLifeCycleDetails.id
+                    logger.info(f"Service Not Provided status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    logger.info(f"Service Not Provided status Inserted in Lifecycle Table Successfully")
+                    message="Service Not Provided Yet Approved By Citizen Updated Successfully"
+                    #! Push notification Return For Status Update
+                    logger.info("FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}, Token User ID :: {citizen_user_id}")
+                    sent_status = send_fcm_notification_async(
+                        token=citizen_tokens,
+                        title=title,
+                        body=notification.format(name=candidate_name) or STATUS_8_MESSAGE,
+                        data={
+                            "service_request_id": service_request_id,
+                            "status":status_name,
+                            "navigate_to": "gig_worker_service_listing"
+                        }
+                    )
+                    logger.warning(f"Push Notification Status :: {sent_status} Push Notification Dispatched Asynchronously for Candidate User ID :: {candidate_user_id}")
+                else:
+                    raise Exception("Service Not Provided can't be Updated if it's not not Already Accepted by Gig Worker")
+                logger.info(" ============ >>> Service Not Provided Yet Approved  by Citizen <<< ============")
+            
+            # ! Service Not Provided =======>>>> status 9 ====>> Gig Worker End
+            elif service_status_to ==9:
+                logger.info(" ================= Service Decline by Gig Worker - status 9 -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                if current_status == 2 and service_status_to == 9:
+                    ServiceRequest.objects.filter(id=service_request_id).update(
+                        service_desc=remarks,
+                        status=service_status_to,
+                        booking_code="DECLINED",
+                        assigned_to=candidate_id,
+                        assigned_by=citizen_id,
+                        assigned_on=current_datetime,
+                        updated_by=citizen_id,
+                        updated_on=current_datetime
+                    )
+                    serviceRequestDetails = ServiceRequest.objects.filter(id=service_request_id).first()
+                    service_request_lifecycle_object={
+                        "service_request": serviceRequestDetails,
+                        "candidate": candidate_details,
+                        "citizen": citizen_details,
+                        "service": service_details,
+                        "lifecycle_status": service_status_to,
+                        "assigned_to": candidate_id,
+                        "assigned_by": citizen_id,
+                        "remarks": STATUS_9,
+                        "created_by": candidate_id,
+                        "created_on": current_datetime,
+                        "updated_by": None, 
+                        "updated_on": None,
+                        "service_desc": remarks
+                    }
+                    serviceRequestDetails = ServiceRequestLifecycle.objects.create(**service_request_lifecycle_object)
+                    service_request_lifecycle_id = serviceRequestDetails.id
+                    logger.info(f"Service Decline status Inserted in Lifecycle Table For Service Request Id :: {service_request_id} and Lifecycle Id :: {service_request_lifecycle_id}")
+                    logger.info(f"Service Decline status Inserted in Lifecycle Table Successfully")
                     
-                
-        
-    
-                
-                
-                
-                
-        
-    
+                    # Decline Question 
+                    if question_id not in (None,""):
+                        for item in question_id:
+                            question_obj = DeclineQuestionMaster.objects.filter(
+                                id=item
+                            )
+                            decline_question_object = {
+                                "service_request": serviceRequestDetails,
+                                "question": question_obj,
+                                "created_by": citizen_id,
+                                "created_on": current_datetime,
+                                "updated_by": None,
+                                "updated_on": None,
+                                "remarks": remarks,
+                                "is_active": True,
+                                "status":ACTIVE,
+                                "created_by": citizen_id,
+                                "citizen": citizen_details,
+                                "candidate": candidate_details,
+                                "decline_question": question_obj,
+                            }
+                            declineQuestionDetails = DeclineQuestionMaster.objects.create(**decline_question_object)
+                            decline_question_id = declineQuestionDetails.id
+                            logger.info(f"Decline Question Inserted successfully for service request id :: {service_request_id} and Question Id :: {decline_question_id} ")
+                            logger.info(f"Decline Question Inserted Successfully")
+                    
+                    message="Service Decline By Gig Worker Updated Successfully"
+                    
+                    #! Push Notification Return For Status Update 
+                    
+                    logger.info(f"FCM Token :: {citizen_tokens}, Token User Type :: {citizen_user_type}, Token User ID :: {citizen_user_id}")
+                    sent_status = send_fcm_notification_async(token=citizen_tokens,
+                                                              title=title,
+                                                              body=notification.format(name=candidate_name) or STATUS_9_MESSAGE,
+                                                              data={
+                                                                  "service_request_id": service_request_id,
+                                                                  "status":status_name,
+                                                                  "navigate_to": "citizen_service_listing"
+                                                                }
+                                                              )
+                    logger.warning(f"Push Notification Status :: {sent_status} Push Notification Dispatched Asynchronously for Citizen User ID :: {citizen_user_id}")
+                else:
+                    raise Exception("Service Decline can't be Updated if it's not not Already Accepted by Gig Worker")
+                logger.info(" ============ >>> Service Decline  by Gig Worker ---- Status 9 <<< ============")
+            else:
+                raise Exception("Service Status Should Not be blank ... Please Choose Correct Service Status for Service Request Update")
             
-        
-    
-        
-        
-        
-    
-    
-    
+            # New Service Requested  =============== ???? 
+        else:
             
-            
+            # ! New Service Requested =====>>>> Status 1 ====>> Citizen End
+            if service_status_to ==1:
+                logger.info(" ================= NEW SERVICE REQUESTED BY CITIZEN - status 1 -----------------")
+                logger.info(f"Current Status : {current_status} | Service Status To :: {service_status_to}")
+                # Get Auto Generated Service Code ====>>> 
+                # Service Code = "SERE"
+                service_code = f"SERE{INT((time.time()))}"
+                logger.info(f"Service Code Generated :: {service_code}")
+                if preferred_day not in (None,""):
+                    if not validate_dob(dob=preferred_day):
+                        raise InvalidUsernameFormatException("Invalid Given Date Format. Required Format - YYYY-MM-DD")
+                    day_name=get_day_name(preferred_day)
+                
+                    
+                    
+                     
+                
             
                     
                     
                     
+
                 
-                
+                  
+                    
+                                    
+            
+            
+            
+            
     
-        
-            
-                
-                
-                
-            
-            
-        
+    
+    
+    
     
     
     
@@ -560,11 +1046,6 @@ def citizenServiceRequest(request):
     
     
 
-    
-    
-    
-    
-    
     
     
     
